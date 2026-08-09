@@ -1,0 +1,8 @@
+node_modules
+.vite-cache
+dist
+.DS_Store
+*.local
+.env
+public/assets/Mainbody-baked.png
+public/assets/pixel-head.png
