@@ -196,19 +196,60 @@ export class MenuScene extends Phaser.Scene {
     if (this.titleClicks < 5) return;
 
     this.testerUnlocked = true;
-    const testerBtn = createMenuButton(this, btnX, btnY, 'TEST: BOSS', {
+
+    const bossBtn = createMenuButton(this, btnX, btnY - 72, 'TEST: BOSS', {
       fontSize: '10px',
       backgroundColor: '#5a3030',
       hoverColor: '#7a4040',
       padding: { x: 14, y: 8 },
     });
-    testerBtn.setDepth(20);
-    testerBtn.on('pointerdown', () => {
+    bossBtn.setDepth(20);
+    bossBtn.on('pointerdown', () => {
       this.closeCamera();
       this.registry.set('testerMode', 'boss');
       this.scene.start('GameScene');
     });
-    this.setStatus('Tester mode unlocked');
+
+    const boss2Btn = createMenuButton(this, btnX, btnY - 32, 'TEST: BOSS 2', {
+      fontSize: '10px',
+      backgroundColor: '#4a3050',
+      hoverColor: '#6a4070',
+      padding: { x: 14, y: 8 },
+    });
+    boss2Btn.setDepth(20);
+    boss2Btn.on('pointerdown', () => {
+      this.closeCamera();
+      this.registry.set('testerMode', 'boss2');
+      this.scene.start('GameScene');
+    });
+
+    const godBtn = createMenuButton(this, btnX, btnY + 8, 'TEST: GOD', {
+      fontSize: '10px',
+      backgroundColor: '#3d5a30',
+      hoverColor: '#4d7a40',
+      padding: { x: 14, y: 8 },
+    });
+    godBtn.setDepth(20);
+    godBtn.on('pointerdown', () => {
+      this.closeCamera();
+      this.registry.set('testerMode', 'god');
+      this.scene.start('GameScene');
+    });
+
+    const level2Btn = createMenuButton(this, btnX, btnY + 48, 'TEST: LEVEL 2', {
+      fontSize: '10px',
+      backgroundColor: '#303a5a',
+      hoverColor: '#40507a',
+      padding: { x: 14, y: 8 },
+    });
+    level2Btn.setDepth(20);
+    level2Btn.on('pointerdown', () => {
+      this.closeCamera();
+      this.registry.set('testerMode', 'level2');
+      this.scene.start('GameScene');
+    });
+
+    this.setStatus('Tester modes unlocked');
   }
 
   buildStatusMessage() {
