@@ -80,11 +80,13 @@ export const CRAWLER_MAX_HP = 2;
 export const CRAWLER_SPEED_MIN = 155;
 export const CRAWLER_SPEED_MAX = 190;
 export const CRAWLER_SCALE = 0.26;
-/** Baked-frame hitbox (FRAME_W×FRAME_H) — wide/low to match the crawl pose. */
-const CRAWLER_BODY_W = 180;
-const CRAWLER_BODY_H = 96;
-const CRAWLER_BODY_OFFSET_X = 82;
-const CRAWLER_BODY_OFFSET_Y = 160;
+/** Baked-frame hitbox — taller so close-range shots still register. */
+const CRAWLER_BODY_W = 210;
+const CRAWLER_BODY_H = 150;
+const CRAWLER_BODY_OFFSET_X = 67;
+const CRAWLER_BODY_OFFSET_Y = 128;
+/** Stop stacking on the player so the gun tip isn't past the hitbox. */
+export const CRAWLER_HOLD_RANGE = 62;
 export const CRAWLER_SPAWN_CHANCE = 0.4;
 export const CRAWLER_UNLOCK_MS = 8_000;
 export const MAX_CRAWLERS_ALIVE = 4;
@@ -170,13 +172,21 @@ export const BOSS2_BURROW_INTERVAL_MS = 5_500;
 /** Burrow only when the player is at least this far (closing tool). */
 export const BOSS2_BURROW_RANGE = 310;
 /** Don't birth crawlers when the player is this close (keeps boss shootable). */
-export const BOSS2_BIRTH_MIN_RANGE = 200;
+export const BOSS2_BIRTH_MIN_RANGE = 280;
 export const BOSS2_BURROW_UNDER_MS = 650;
 export const BOSS2_EMERGE_MS = 480;
 export const BOSS2_BIRTH_MS = 780;
 export const BOSS2_SPIT_MS = 720;
 export const BOSS2_BIRTH_COUNT = 2;
 export const BOSS2_EMERGE_TELEGRAPH_RADIUS = 56;
+/** Set false to disable thrown-exploder without reverting other Boss2 work. */
+export const BOSS2_ENABLE_EXPLODER_THROW = true;
+export const BOSS2_THROW_BOMBER_INTERVAL_MS = 13_000;
+export const BOSS2_THROW_WINDUP_MS = 420;
+export const BOSS2_THROW_FLIGHT_MS = 780;
+export const BOSS2_THROW_LAND_RADIUS = 42;
+/** Min gap between exploder throw and crawler birth (either order). */
+export const BOSS2_SPAWN_ATTACK_GAP_MS = 4000;
 export const BOSS_KIND_CHARGER = 'charger';
 export const BOSS_KIND_BROODMOTHER = 'broodmother';
 
@@ -783,6 +793,92 @@ function createBossAnim(scene, textureKey, animKey, {
   });
 }
 
+function sceneHasBomberTexture(scene) {
+  return !!scene?.textures?.exists(BOMBER_TEXTURE_KEY);
+}
+
+function launchBroodmotherBomberThrow(zombie, player) {
+  const scene = zombie.scene;
+  const group = scene?.zombies;
+  if (!scene?.add || !group || !sceneHasBomberTexture(scene)) return;
+  if (countActiveZombies(group, ZOMBIE_TYPE_BOMBER) >= MAX_BOMBERS_ALIVE) return;
+
+  clearBroodmotherBomberThrow(zombie);
+
+  const dir = zombie.facing === 'left' ? -1 : 1;
+  const sx = zombie.x + dir * Math.min(55, zombie.displayWidth * 0.18);
+  const sy = zombie.y - zombie.displayHeight * 0.12;
+
+  const offset = 50 + Math.random() * 70;
+  const a = Math.random() * Math.PI * 2;
+  const bounds = scene.physics?.world?.bounds;
+  let lx = player.x + Math.cos(a) * offset;
+  let ly = player.y + Math.sin(a) * offset;
+  if (bounds) {
+    lx = Phaser.Math.Clamp(lx, bounds.x + 40, bounds.right - 40);
+    ly = Phaser.Math.Clamp(ly, bounds.y + 40, bounds.bottom - 40);
+  }
+
+  const marker = scene.add
+    .circle(lx, ly, BOSS2_THROW_LAND_RADIUS, 0xff3a1a, 0.22)
+    .setDepth(4);
+  marker.setStrokeStyle(2, 0xff7755, 0.9);
+  scene.tweens.add({
+    targets: marker,
+    scale: 1.12,
+    alpha: 0.4,
+    duration: 280,
+    yoyo: true,
+    repeat: -1,
+  });
+
+  const flyer = scene.add.sprite(sx, sy, BOMBER_TEXTURE_KEY, 0);
+  flyer.setDepth(16);
+  flyer.setScale(BOMBER_SCALE * 0.95);
+  flyer.setTint(0xffaa88);
+  if (scene.anims.exists(BOMBER_WALK_RIGHT)) {
+    flyer.anims.play(BOMBER_WALK_RIGHT, true);
+  }
+
+  const flight = { t: 0 };
+  const tween = scene.tweens.add({
+    targets: flight,
+    t: 1,
+    duration: BOSS2_THROW_FLIGHT_MS,
+    ease: 'Sine.easeIn',
+    onUpdate: () => {
+      const t = flight.t;
+      flyer.x = sx + (lx - sx) * t;
+      flyer.y = sy + (ly - sy) * t - Math.sin(t * Math.PI) * 150;
+      flyer.rotation = t * Math.PI * 2.2 * dir;
+    },
+    onComplete: () => {
+      clearBroodmotherBomberThrow(zombie);
+      const bomber = spawnZombie(scene, group, ZOMBIE_TYPE_BOMBER);
+      if (!bomber) return;
+      bomber.setPosition(lx, ly);
+      bomber.setTint(0xff6644);
+      scene.time.delayedCall(220, () => {
+        if (bomber.active) bomber.clearTint();
+      });
+      // Brief arming flash so the landed throw reads.
+      scene.cameras?.main?.shake(80, 0.0025);
+    },
+  });
+
+  zombie.bomberThrowFx = { flyer, marker, tween };
+}
+
+function clearBroodmotherBomberThrow(zombie) {
+  const fx = zombie.bomberThrowFx;
+  if (!fx) return;
+  fx.tween?.stop();
+  zombie.scene?.tweens?.killTweensOf(fx.marker);
+  fx.flyer?.destroy();
+  fx.marker?.destroy();
+  zombie.bomberThrowFx = null;
+}
+
 function pickBroodmotherEmergePoint(zombie, player) {
   const offset = 90 + Math.random() * 70;
   const a = Math.random() * Math.PI * 2;
@@ -1223,6 +1319,11 @@ export function spawnZombie(scene, group, type = ZOMBIE_TYPE_WALKER) {
   zombie.nextBirthAt = isBoss && useBroodmother
     ? scene.time.now + BOSS2_BIRTH_INTERVAL_MS * 0.6
     : 0;
+  zombie.nextBomberThrowAt =
+    isBoss && useBroodmother && BOSS2_ENABLE_EXPLODER_THROW
+      ? scene.time.now + BOSS2_THROW_BOMBER_INTERVAL_MS * 0.55
+      : 0;
+  clearBroodmotherBomberThrow(zombie);
   zombie.chargeAngle = 0;
   zombie.isAttacking = false;
   zombie.attackUntil = 0;
@@ -1416,12 +1517,32 @@ function steerWalker(zombie, player, group, time) {
   zombie.body.setVelocity((vx / len) * speed, (vy / len) * speed);
 }
 
-/** Fast low rushers — short lead, little fluff. */
+/** Fast low rushers — close the gap, then hold bite range (still touchable). */
 function steerCrawler(zombie, player, group) {
+  const dist = Phaser.Math.Distance.Between(zombie.x, zombie.y, player.x, player.y);
+  const sep = separationSteer(zombie, group);
+
+  if (dist <= CRAWLER_HOLD_RANGE) {
+    // Back off slightly + circle so they don't sit under the muzzle spawn.
+    const away = Math.atan2(zombie.y - player.y, zombie.x - player.x);
+    const tangent = away + Math.PI / 2;
+    let vx =
+      Math.cos(away) * zombie.moveSpeed * 0.35 +
+      Math.cos(tangent) * zombie.moveSpeed * 0.55;
+    let vy =
+      Math.sin(away) * zombie.moveSpeed * 0.35 +
+      Math.sin(tangent) * zombie.moveSpeed * 0.55;
+    vx += sep.x * 0.85;
+    vy += sep.y * 0.85;
+    const len = Math.hypot(vx, vy) || 1;
+    const holdSpeed = zombie.moveSpeed * 0.7;
+    zombie.body.setVelocity((vx / len) * holdSpeed, (vy / len) * holdSpeed);
+    return;
+  }
+
   const pred = predictPlayerPoint(player, zombie, 0.55);
   let vx = pred.x - zombie.x;
   let vy = pred.y - zombie.y;
-  const sep = separationSteer(zombie, group);
   vx += sep.x * 0.7;
   vy += sep.y * 0.7;
   const len = Math.hypot(vx, vy) || 1;
@@ -1527,8 +1648,36 @@ function updateBroodmotherBoss(zombie, player, time, angle, onShooterFire) {
     return;
   }
 
+  if (zombie.bossPhase === 'throw_bomber_windup') {
+    zombie.body.setVelocity(0, 0);
+    if (time >= zombie.phaseUntil) {
+      launchBroodmotherBomberThrow(zombie, player);
+      zombie.bossPhase = 'chase';
+      zombie.isAttacking = false;
+      zombie.nextBomberThrowAt = time + BOSS2_THROW_BOMBER_INTERVAL_MS;
+      resetBossScale(zombie);
+      zombie.anims?.play(zombie.walkAnim || BOSS2_WALK, true);
+    }
+    return;
+  }
+
   if (zombie.bossPhase === 'birth') {
     zombie.body.setVelocity(0, 0);
+    const birthDist = Phaser.Math.Distance.Between(
+      zombie.x,
+      zombie.y,
+      player.x,
+      player.y,
+    );
+    // Abort if the player closes in during the birth windup.
+    if (birthDist < BOSS2_BIRTH_MIN_RANGE) {
+      zombie.bossPhase = 'chase';
+      zombie.isAttacking = false;
+      zombie.nextBirthAt = time + 600;
+      resetBossScale(zombie);
+      zombie.anims?.play(zombie.walkAnim || BOSS2_WALK, true);
+      return;
+    }
     if (time >= zombie.phaseUntil) {
       if (zGroup && zombie.scene) {
         for (let i = 0; i < BOSS2_BIRTH_COUNT; i += 1) {
@@ -1620,6 +1769,31 @@ function updateBroodmotherBoss(zombie, player, time, angle, onShooterFire) {
     zombie.setScale(base * (1 + bob * 0.35), base * (1 - bob));
   }
 
+  // Lob a live exploder near the player (one at a time). Soft-disable via flag.
+  if (BOSS2_ENABLE_EXPLODER_THROW && time >= (zombie.nextBomberThrowAt || 0)) {
+    const bombersAlive = zGroup
+      ? countActiveZombies(zGroup, ZOMBIE_TYPE_BOMBER)
+      : 0;
+    if (bombersAlive >= MAX_BOMBERS_ALIVE || !sceneHasBomberTexture(zombie.scene)) {
+      zombie.nextBomberThrowAt = time + 800;
+    } else {
+      zombie.bossPhase = 'throw_bomber_windup';
+      zombie.phaseUntil = time + BOSS2_THROW_WINDUP_MS;
+      zombie.isAttacking = true;
+      zombie.body.setVelocity(0, 0);
+      // Give the player time after a throw before crawlers drop.
+      zombie.nextBirthAt = Math.max(
+        zombie.nextBirthAt || 0,
+        time + BOSS2_SPAWN_ATTACK_GAP_MS,
+      );
+      resetBossScale(zombie);
+      if (zombie.scene?.anims.exists(BOSS2_SPIT_ANIM)) {
+        zombie.anims.play(BOSS2_SPIT_ANIM, false);
+      }
+      return;
+    }
+  }
+
   if (time >= zombie.nextChargeAt) {
     const dist = Phaser.Math.Distance.Between(zombie.x, zombie.y, player.x, player.y);
     // Closing tool: only dive when the player is far enough to kite.
@@ -1650,6 +1824,13 @@ function updateBroodmotherBoss(zombie, player, time, angle, onShooterFire) {
       zombie.phaseUntil = time + BOSS2_BIRTH_MS;
       zombie.isAttacking = true;
       zombie.body.setVelocity(0, 0);
+      // Same spacing the other way: no throw right after a birth.
+      if (BOSS2_ENABLE_EXPLODER_THROW) {
+        zombie.nextBomberThrowAt = Math.max(
+          zombie.nextBomberThrowAt || 0,
+          time + BOSS2_SPAWN_ATTACK_GAP_MS,
+        );
+      }
       if (zombie.scene?.anims.exists(BOSS2_BIRTH_ANIM)) {
         zombie.anims.play(BOSS2_BIRTH_ANIM, false);
       }
@@ -1817,9 +1998,11 @@ export function clearZombies(group) {
 export function killZombie(zombie) {
   destroyZombieHealthBar(zombie);
   clearBroodmotherEmergeTelegraph(zombie);
+  clearBroodmotherBomberThrow(zombie);
   cancelZombieFlash(zombie);
   zombie.clearTint();
   if (zombie.zombieType === ZOMBIE_TYPE_BOSS) resetBossScale(zombie);
+  playZombieKillSfx(zombie);
   zombie.bossPhase = null;
   zombie.burrowed = false;
   zombie.isTelegraphing = false;
@@ -1831,6 +2014,25 @@ export function killZombie(zombie) {
   zombie.setVisible(false);
   zombie.body?.stop();
   if (zombie.body) zombie.body.enable = false;
+}
+
+/** Keys must match GameScene preload (`zombie-death` / `zombie-boss-death`). */
+function playZombieKillSfx(zombie) {
+  const scene = zombie?.scene;
+  if (!scene?.sound || !scene.cache?.audio) return;
+
+  const isBoss = zombie.zombieType === ZOMBIE_TYPE_BOSS;
+  const key = isBoss ? 'zombie-boss-death' : 'zombie-death';
+  if (!scene.cache.audio.exists(key)) return;
+
+  scene.sound.unlock();
+  // Fresh instance so rapid multi-kills don't cut each other off.
+  const sfx = scene.sound.add(key, {
+    volume: isBoss ? 0.7 : 0.5,
+    rate: isBoss ? 1 : 0.92 + Math.random() * 0.16,
+  });
+  sfx.once('complete', () => sfx.destroy());
+  sfx.play();
 }
 
 function destroyZombieHealthBar(zombie) {

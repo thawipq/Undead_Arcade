@@ -385,6 +385,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.lastFired = 0;
+    this.pendingShot = false;
     this.testerMode = this.registry.get('testerMode') || null;
     this.registry.remove('testerMode');
     if (this.testerMode === 'level2' || this.testerMode === 'boss2') {
@@ -492,6 +493,23 @@ export class GameScene extends Phaser.Scene {
 
     this.ensureLevelBgm();
 
+    // Queue clicks so a quick press still fires even if mouseup happens between frames.
+    this.onPointerDownShoot = (pointer) => {
+      if (!pointer.leftButtonDown()) return;
+      if (
+        this.dead ||
+        this.paused ||
+        this.choosingReward ||
+        this.levelClearOpen ||
+        this.shopOpen ||
+        !this.player?.active
+      ) {
+        return;
+      }
+      this.pendingShot = true;
+    };
+    this.input.on('pointerdown', this.onPointerDownShoot);
+
     this.onEsc = () => {
       if (this.dead || this.choosingReward || this.levelClearOpen) return;
       if (this.shopOpen) {
@@ -504,6 +522,7 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-ESC', this.onEsc);
     this.events.once('shutdown', () => {
       this.input.keyboard.off('keydown-ESC', this.onEsc);
+      this.input.off('pointerdown', this.onPointerDownShoot);
       this.closeBossWarningUi();
       this.stopAlarmSfx();
       this.stopBgm();
@@ -1339,7 +1358,6 @@ export class GameScene extends Phaser.Scene {
     if (died) {
       this.killCount += 1;
       this.killText?.setText(`Kills: ${this.killCount}`);
-      this.playZombieDeathSfx(wasBoss);
       if (wasBomber) {
         this.detonateBomber(zombie, false, dropX, dropY);
       } else if (wasBoss) {
@@ -1372,7 +1390,6 @@ export class GameScene extends Phaser.Scene {
     if (fromContact && zombie.active) {
       this.killCount += 1;
       this.killText?.setText(`Kills: ${this.killCount}`);
-      this.playZombieDeathSfx(false);
       killZombie(zombie);
     }
 
@@ -1760,6 +1777,7 @@ export class GameScene extends Phaser.Scene {
     this.facing = 'right';
     playSoldierIdle(this.player, this.facing);
     this.lastFired = 0;
+    this.pendingShot = false;
 
     this.playerHp = PLAYER_MAX_HP;
     this.invincibleUntil = 0;
@@ -2056,16 +2074,6 @@ export class GameScene extends Phaser.Scene {
       duration: 700,
       ease: 'Cubic.easeOut',
       onComplete: () => banner.destroy(),
-    });
-  }
-
-  playZombieDeathSfx(isBoss = false) {
-    const key = isBoss ? BOSS_DEATH_SFX_KEY : ZOMBIE_DEATH_SFX_KEY;
-    if (!this.cache.audio.exists(key)) return;
-    this.sound.unlock();
-    this.sound.play(key, {
-      volume: isBoss ? 0.7 : 0.5,
-      rate: isBoss ? 1 : 0.92 + Math.random() * 0.16,
     });
   }
 
@@ -2520,6 +2528,7 @@ export class GameScene extends Phaser.Scene {
     this.facing = 'right';
     playSoldierIdle(this.player, this.facing);
     this.lastFired = 0;
+    this.pendingShot = false;
     this.level =
       this.testerMode === 'level2' || this.testerMode === 'boss2' ? 2 : 1;
     this.levelText?.setText(`LEVEL ${this.level}`);
@@ -2657,10 +2666,15 @@ export class GameScene extends Phaser.Scene {
 
   handleShooting(time) {
     const overdrive = this.isOverdriveActive(time);
-    if (this.reloading && !overdrive) return;
+    if (this.reloading && !overdrive) {
+      this.pendingShot = false;
+      return;
+    }
 
-    const wantsToFire =
-      this.input.activePointer.isDown || this.keys.space.isDown;
+    const pointer = this.input.activePointer;
+    const holding =
+      (pointer?.leftButtonDown?.() ?? pointer?.isDown) || this.keys.space.isDown;
+    const wantsToFire = holding || this.pendingShot;
 
     const fireMs = overdrive
       ? Math.max(120, Math.round((this.fireRateMs || FIRE_RATE_MS) * OVERDRIVE_FIRE_MULT))
@@ -2669,6 +2683,9 @@ export class GameScene extends Phaser.Scene {
     if (!wantsToFire || time < this.lastFired + fireMs) {
       return;
     }
+
+    // Consume the queued click only when we actually take a fire attempt.
+    this.pendingShot = false;
 
     if (!overdrive && this.ammo <= 0) {
       this.showReloadHint();
@@ -2694,11 +2711,17 @@ export class GameScene extends Phaser.Scene {
       angle = this.facing === 'left' ? Math.PI : 0;
     }
 
-    const muzzleX = px + Math.cos(angle) * tipLen;
-    const muzzleY = py + Math.sin(angle) * tipLen;
     // Flash stays on the gun tip (L/R sprite), not along the aim ray.
     const flashX = px + tip.x;
     const flashY = py + tip.y;
+
+    // Start near the body so melee-range enemies (esp. crawlers) aren't past the spawn.
+    const spawnDist = Math.min(tipLen, 22);
+    const muzzleX = px + Math.cos(angle) * spawnDist;
+    const muzzleY = py + Math.sin(angle) * spawnDist;
+
+    const bullet = this.bullets.get(muzzleX, muzzleY, 'bullet');
+    if (!bullet) return;
 
     if (!overdrive) {
       this.ammo = Math.max(0, this.ammo - 1);
@@ -2708,9 +2731,6 @@ export class GameScene extends Phaser.Scene {
     this.spawnMuzzleSpark(flashX, flashY, this.facing);
     this.playGunSfx();
 
-    const bullet = this.bullets.get(muzzleX, muzzleY, 'bullet');
-    if (!bullet) return;
-
     bullet.setActive(true);
     bullet.setVisible(true);
     bullet.setDepth(5);
@@ -2718,6 +2738,11 @@ export class GameScene extends Phaser.Scene {
 
     this.physics.velocityFromRotation(angle, BULLET_SPEED, bullet.body.velocity);
     bullet.setRotation(angle);
+
+    // Same-frame hit if we spawned inside / on a zombie (overlap only runs next step otherwise).
+    this.physics.world.overlap(bullet, this.zombies, (b, z) => {
+      this.onBulletHitZombie(b, z);
+    });
   }
 
   playGunSfx() {
