@@ -148,6 +148,8 @@ const COIN_SFX_KEY = 'coin-pickup';
 const COIN_SFX_PATH = 'assets/sfx/coin-pickup.wav';
 const OVERDRIVE_SFX_KEY = 'overdrive-voice';
 const OVERDRIVE_SFX_PATH = 'assets/sfx/overdrive-voice.wav';
+const EXPLODER_TIMER_SFX_KEY = 'exploder-timer';
+const EXPLODER_TIMER_SFX_PATH = 'assets/sfx/explodertimersfx.wav';
 
 /** Drop custom art here to replace the drawn defaults (48×48 PNG works well). */
 const ABILITY_ICON_PATHS = {
@@ -254,6 +256,9 @@ export class GameScene extends Phaser.Scene {
     }
     if (!this.cache.audio.exists(OVERDRIVE_SFX_KEY)) {
       this.load.audio(OVERDRIVE_SFX_KEY, OVERDRIVE_SFX_PATH);
+    }
+    if (!this.cache.audio.exists(EXPLODER_TIMER_SFX_KEY)) {
+      this.load.audio(EXPLODER_TIMER_SFX_KEY, EXPLODER_TIMER_SFX_PATH);
     }
   }
 
@@ -525,6 +530,7 @@ export class GameScene extends Phaser.Scene {
       this.input.off('pointerdown', this.onPointerDownShoot);
       this.closeBossWarningUi();
       this.stopAlarmSfx();
+      this.stopExploderTimerSfx();
       this.stopBgm();
       this.player = null;
       this.ready = false;
@@ -703,6 +709,7 @@ export class GameScene extends Phaser.Scene {
       this.fireEnemyBullet(zombie, angle);
     });
     this.checkBomberProximityFuses();
+    this.syncExploderTimerSfx();
     this.cleanupBullets();
     this.cleanupEnemyBullets();
     this.cleanupAcidPuddles(time);
@@ -736,6 +743,7 @@ export class GameScene extends Phaser.Scene {
     this.bossSpawnAt = 0;
     this.clearRewardGiven = false;
     this.stopAlarmSfx();
+    this.stopExploderTimerSfx();
     this.closeBossWarningUi();
 
     const level = this.level || 1;
@@ -997,6 +1005,38 @@ export class GameScene extends Phaser.Scene {
     if (this.alarmSfx.isPlaying) this.alarmSfx.stop();
     this.alarmSfx.destroy();
     this.alarmSfx = null;
+  }
+
+  /** Loop fuse tick while any exploder is alive; stop when none remain. */
+  syncExploderTimerSfx() {
+    const alive = countActiveZombies(this.zombies, ZOMBIE_TYPE_BOMBER) > 0;
+    if (alive) {
+      if (!this.exploderTimerSfx?.isPlaying && !this.exploderTimerSfx?.isPaused) {
+        this.playExploderTimerSfx();
+      }
+    } else {
+      this.stopExploderTimerSfx();
+    }
+  }
+
+  playExploderTimerSfx() {
+    this.stopExploderTimerSfx();
+    if (!this.cache.audio.exists(EXPLODER_TIMER_SFX_KEY)) return;
+    this.sound.unlock();
+    this.exploderTimerSfx = this.sound.add(EXPLODER_TIMER_SFX_KEY, {
+      volume: 0.4,
+      loop: true,
+    });
+    this.exploderTimerSfx.play();
+  }
+
+  stopExploderTimerSfx() {
+    if (!this.exploderTimerSfx) return;
+    if (this.exploderTimerSfx.isPlaying || this.exploderTimerSfx.isPaused) {
+      this.exploderTimerSfx.stop();
+    }
+    this.exploderTimerSfx.destroy();
+    this.exploderTimerSfx = null;
   }
 
   showBossBanner() {
@@ -1653,6 +1693,7 @@ export class GameScene extends Phaser.Scene {
     this.player?.anims?.pause();
     this.physics.world.pause();
     this.pauseBgm();
+    if (this.exploderTimerSfx?.isPlaying) this.exploderTimerSfx.pause();
     this.clearExitDoor();
     this.buildLevelClearUi();
   }
@@ -1761,6 +1802,7 @@ export class GameScene extends Phaser.Scene {
     this.closeShopUi();
     this.closeBossWarningUi();
     this.stopAlarmSfx();
+    this.stopExploderTimerSfx();
     this.stopBossBgm();
     this.clearExitDoor();
     this.ensureLevelBgm();
@@ -2277,6 +2319,7 @@ export class GameScene extends Phaser.Scene {
     this.dead = true;
     this.playerHp = 0;
     this.refreshHeartHud();
+    this.stopExploderTimerSfx();
     this.player.setVelocity(0, 0);
     this.player.setAlpha(1);
     this.player.anims?.stop();
@@ -2369,6 +2412,7 @@ export class GameScene extends Phaser.Scene {
     this.player.anims?.pause();
     this.pauseBgm();
     if (this.alarmSfx?.isPlaying) this.alarmSfx.pause();
+    if (this.exploderTimerSfx?.isPlaying) this.exploderTimerSfx.pause();
 
     const { width, height } = this.scale;
     // Keep pause UI as top-level objects (not a Container) so clicks register
@@ -2485,6 +2529,7 @@ export class GameScene extends Phaser.Scene {
     this.player?.anims?.resume();
     this.resumeBgm();
     if (this.alarmSfx?.isPaused) this.alarmSfx.resume();
+    if (this.exploderTimerSfx?.isPaused) this.exploderTimerSfx.resume();
   }
 
   applyPausedTimeShift(dt) {
@@ -2512,6 +2557,7 @@ export class GameScene extends Phaser.Scene {
     this.closeLevelClearUi();
     this.closeBossWarningUi();
     this.stopAlarmSfx();
+    this.stopExploderTimerSfx();
     this.stopBossBgm();
     this.clearExitDoor();
     this.physics.world.resume();
@@ -2587,6 +2633,7 @@ export class GameScene extends Phaser.Scene {
     this.closeLevelClearUi();
     this.closeBossWarningUi();
     this.stopAlarmSfx();
+    this.stopExploderTimerSfx();
     this.stopBgm();
     this.clearExitDoor();
     this.clearAcidPuddles();
@@ -2715,8 +2762,8 @@ export class GameScene extends Phaser.Scene {
     const flashX = px + tip.x;
     const flashY = py + tip.y;
 
-    // Start near the body so melee-range enemies (esp. crawlers) aren't past the spawn.
-    const spawnDist = Math.min(tipLen, 22);
+    // Spawn along the aim ray far enough to be visible before contact checks.
+    const spawnDist = Math.max(28, Math.min(tipLen, 40));
     const muzzleX = px + Math.cos(angle) * spawnDist;
     const muzzleY = py + Math.sin(angle) * spawnDist;
 
@@ -2733,16 +2780,19 @@ export class GameScene extends Phaser.Scene {
 
     bullet.setActive(true);
     bullet.setVisible(true);
-    bullet.setDepth(5);
-    bullet.body.enable = true;
+    bullet.setDepth(12);
+    if (bullet.body) {
+      bullet.body.enable = true;
+      bullet.body.reset(muzzleX, muzzleY);
+    } else {
+      this.physics.add.existing(bullet);
+      bullet.body.reset(muzzleX, muzzleY);
+    }
 
     this.physics.velocityFromRotation(angle, BULLET_SPEED, bullet.body.velocity);
     bullet.setRotation(angle);
-
-    // Same-frame hit if we spawned inside / on a zombie (overlap only runs next step otherwise).
-    this.physics.world.overlap(bullet, this.zombies, (b, z) => {
-      this.onBulletHitZombie(b, z);
-    });
+    // Hits use the bullets↔zombies overlap in create — avoid same-frame
+    // despawn so the projectile is visible for at least one tick.
   }
 
   playGunSfx() {
@@ -2862,6 +2912,7 @@ export class GameScene extends Phaser.Scene {
     this.player.anims?.pause();
     this.player.setVelocity(0, 0);
     this.pauseBgm();
+    if (this.exploderTimerSfx?.isPlaying) this.exploderTimerSfx.pause();
     this.hideReloadHint();
     this.buildShopUi();
   }
@@ -2879,6 +2930,7 @@ export class GameScene extends Phaser.Scene {
     this.physics.world.resume();
     this.player?.anims?.resume();
     this.resumeBgm();
+    if (this.exploderTimerSfx?.isPaused) this.exploderTimerSfx.resume();
   }
 
   buildShopUi() {

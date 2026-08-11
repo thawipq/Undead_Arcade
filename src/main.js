@@ -10,7 +10,7 @@ const config = {
   parent: 'game-container',
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
-  backgroundColor: '#1a2332',
+  backgroundColor: '#120608',
   // Backing-store multiplier for crisp text/UI on Retina displays.
   resolution: dpr,
   physics: {

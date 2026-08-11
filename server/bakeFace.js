@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { RETRO_PIXEL_HEAD } from '../shared/retroHead.js';
 
 const HEAD_OUT_PATH = path.resolve('public/assets/pixel-head.png');
 
-const HEAD_PROMPT = `
+const HEAD_PROMPT_PHOTO = `
 Using this photo, extract ONLY the person's face and hair.
 
 Requirements:
@@ -15,6 +16,23 @@ Requirements:
 - Centered, facing forward
 - Clean edges, no checkerboard, no white/black box, no text
 `.trim();
+
+const HEAD_PROMPT_RETRO = `
+Using this photo, redraw ONLY the person's face and hair as a classic 16-bit / 32-bit retro arcade sprite head for a top-down zombie shooter.
+
+Requirements:
+- Chunky visible pixel art (square pixels), SNES / arcade beat-em-up portrait style
+- Keep this person's likeness: face shape, hair, skin tone, eyes, key features
+- Flat cel shading, limited color palette, crisp dark 1px outline
+- Include ONLY face + hair (forehead, cheeks, chin, ears if visible, full hairstyle)
+- Do NOT include neck, throat, collar, shoulders, or body
+- Crop tightly under the chin — stop at the jawline
+- Fully transparent background, centered, facing forward
+- NO photorealism, NO soft blur, NO photo texture, NO smooth gradients
+- No checkerboard, no white/black box, no text, no frame
+`.trim();
+
+const HEAD_PROMPT = RETRO_PIXEL_HEAD ? HEAD_PROMPT_RETRO : HEAD_PROMPT_PHOTO;
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -79,6 +97,7 @@ async function cutOutHead(apiKey, faceDataUrl) {
   return {
     headDataUrl: `data:image/png;base64,${b64}`,
     path: 'assets/pixel-head.png',
+    style: RETRO_PIXEL_HEAD ? 'retro' : 'photo',
   };
 }
 
@@ -93,6 +112,7 @@ export function createBakeFaceMiddleware(apiKey) {
       sendJson(res, 200, {
         configured: Boolean(apiKey),
         headExists: fs.existsSync(HEAD_OUT_PATH),
+        retroPixelHead: RETRO_PIXEL_HEAD,
       });
       return;
     }

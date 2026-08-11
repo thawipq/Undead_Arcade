@@ -22,6 +22,19 @@ import {
 import { createMenuButton } from '../ui/menuButtons.js';
 import { PIXEL_FONT } from '../ui/fonts.js';
 
+const MENU_BG_KEY = 'menu-title-bg';
+const MENU_BG_PATH = 'assets/ui/menu-title.png';
+const MENU_VIDEO_KEY = 'menu-title-video';
+const MENU_VIDEO_PATH = 'assets/ui/menu.mp4';
+const MENU_MUSIC_KEY = 'menu-music';
+const MENU_MUSIC_PATH = 'assets/music/MenuMusic.mp3';
+/** Menu video layout space (menu.mp4 / 1024×576). */
+const MENU_ART_W = 1024;
+const MENU_ART_H = 576;
+/** Gold frames in art pixels (from menu video). */
+const MENU_FRAME_LEFT = { x0: 37, y0: 314, x1: 216, y1: 560 };
+const MENU_FRAME_RIGHT = { x0: 806, y0: 314, x1: 987, y1: 560 };
+
 export class MenuScene extends Phaser.Scene {
   constructor() {
     super('MenuScene');
@@ -29,6 +42,16 @@ export class MenuScene extends Phaser.Scene {
 
   preload() {
     preloadSoldierSheet(this);
+    if (!this.textures.exists(MENU_BG_KEY)) {
+      this.load.image(MENU_BG_KEY, MENU_BG_PATH);
+    }
+    // noAudio: true helps browsers autoplay the looping menu bed.
+    if (!this.cache.video.exists(MENU_VIDEO_KEY)) {
+      this.load.video(MENU_VIDEO_KEY, MENU_VIDEO_PATH, 'loadeddata', false, true);
+    }
+    if (!this.cache.audio.exists(MENU_MUSIC_KEY)) {
+      this.load.audio(MENU_MUSIC_KEY, MENU_MUSIC_PATH);
+    }
   }
 
   async create() {
@@ -36,158 +59,275 @@ export class MenuScene extends Phaser.Scene {
     this.cameraOpen = false;
     this.statusText = null;
     this.baking = false;
+    this.menuVideo = null;
+    this.menuMusic = null;
 
-    this.add.rectangle(width / 2, height / 2, width, height, 0x0f1620);
+    const art = this.placeMenuBackground(width, height);
+    this.startMenuMusic();
+    // Browsers often block audio until a gesture — resume on first click.
+    this.input.once('pointerdown', () => this.startMenuMusic());
 
-    const grid = this.add.graphics();
-    grid.lineStyle(1, 0x1c2a3a, 0.7);
-    for (let x = 48; x < width; x += 48) grid.lineBetween(x, 0, x, height);
-    for (let y = 48; y < height; y += 48) grid.lineBetween(0, y, width, y);
+    const cx = width / 2;
+    // Invisible hit target over the painted title (tester unlock).
+    const titleHit = this.add
+      .rectangle(cx, art.toScreenY(95), 520, 110, 0x000000, 0)
+      .setInteractive({ useHandCursor: false })
+      .setDepth(4);
 
-    const cardW = 980;
-    const cardH = 560;
-    const cardX = width / 2;
-    const cardY = height / 2 + 8;
-
-    this.add.rectangle(cardX, cardY, cardW, cardH, 0x152031, 0.96)
-      .setStrokeStyle(2, 0x314155);
-
-    const title = this.add
-      .text(cardX, cardY - cardH / 2 + 48, 'ZOMBIE SHOOTER', {
-        fontFamily: PIXEL_FONT,
-        fontSize: '28px',
-        color: '#e8eef5',
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: false });
-
-    // Hidden tester unlock: click the title 5 times.
     this.titleClicks = 0;
     this.testerUnlocked = false;
-    title.on('pointerdown', () => this.onTitleTesterClick(cardX, cardY + cardH / 2 - 12));
+    titleHit.on('pointerdown', () => this.onTitleTesterClick(width - 130, height / 2 + 20));
+
+    const left = MENU_FRAME_LEFT;
+    const right = MENU_FRAME_RIGHT;
+    const previewX = art.toScreenX((left.x0 + left.x1) / 2);
+    const faceX = art.toScreenX((right.x0 + right.x1) / 2);
+    const panelY = art.toScreenY((left.y0 + left.y1) / 2);
+    const panelW = (right.x1 - right.x0) * art.scaleX;
+    const panelH = (left.y1 - left.y0) * art.scaleY;
+    const labelY = art.toScreenY(left.y0) + 18;
 
     this.add
-      .text(cardX, cardY - cardH / 2 + 92, 'Take a photo — AI cuts out your head\nand we put it on the soldier', {
+      .text(previewX, labelY, 'SOLDIER', {
         fontFamily: PIXEL_FONT,
         fontSize: '10px',
-        color: '#8fa3b8',
-        align: 'center',
-        lineSpacing: 8,
+        color: '#e8b84a',
+        stroke: '#1a0808',
+        strokeThickness: 3,
       })
-      .setOrigin(0.5);
-
-    const previewX = cardX - 230;
-    const panelY = cardY + 30;
-
-    this.add.rectangle(previewX, panelY, 280, 300, 0x0f1824)
-      .setStrokeStyle(1, 0x3a5168);
+      .setOrigin(0.5)
+      .setDepth(5);
 
     this.add
-      .text(previewX, panelY - 128, 'PREVIEW', {
+      .text(faceX, labelY, 'INSERT FACE', {
         fontFamily: PIXEL_FONT,
         fontSize: '10px',
-        color: '#8fa3b8',
+        color: '#e8b84a',
+        stroke: '#1a0808',
+        strokeThickness: 3,
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setDepth(5);
 
     const ready = await buildSoldierAnim(this, getSavedFaceDataUrl());
     if (!ready) {
       this.add
-        .text(previewX, panelY, 'Missing\nMainbody.png', {
+        .text(previewX, panelY + 6, 'Missing\nMainbody.png', {
           fontFamily: PIXEL_FONT,
           fontSize: '10px',
           color: '#e08a8a',
           align: 'center',
         })
-        .setOrigin(0.5);
+        .setOrigin(0.5)
+        .setDepth(6);
     } else {
-      this.preview = this.add.sprite(previewX, panelY + 16, 'soldier', 0);
-      this.preview.setScale(0.36);
-      this.preview.setDepth(10);
+      this.preview = this.add.sprite(previewX, panelY + 8, 'soldier', 0);
+      this.preview.setScale(0.3);
+      this.preview.setDepth(6);
       playSoldierWalk(this.preview, 'right');
+      this.tweens.add({
+        targets: this.preview,
+        y: this.preview.y - 4,
+        duration: 1100,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
     }
 
-    const faceX = cardX + 200;
-
-    this.add.rectangle(faceX, panelY, 360, 300, 0x0f1824)
-      .setStrokeStyle(1, 0x3a5168);
-
-    this.add
-      .text(faceX, panelY - 128, 'SOLDIER FACE', {
-        fontFamily: PIXEL_FONT,
-        fontSize: '10px',
-        color: '#8fa3b8',
-      })
-      .setOrigin(0.5);
-
-    this.add
-      .text(faceX, panelY - 88, 'Take or upload a photo.\nAI removes the background,\nthen we attach your head.', {
-        fontFamily: PIXEL_FONT,
-        fontSize: '10px',
-        color: '#6d8299',
-        align: 'center',
-        lineSpacing: 5,
-      })
-      .setOrigin(0.5);
-
-    const takePhotoBtn = createMenuButton(this, faceX, panelY - 8, 'TAKE PHOTO', {
-      fontSize: '12px',
-      backgroundColor: '#3d6f9c',
-      hoverColor: '#4d84b6',
-      padding: { x: 24, y: 12 },
+    // Stack face controls inside the right gold frame.
+    const faceTop = art.toScreenY(right.y0);
+    const faceBottom = art.toScreenY(right.y1);
+    const faceMid = (faceTop + faceBottom) / 2 + 6;
+    const takePhotoBtn = createMenuButton(this, faceX, faceMid - 36, 'TAKE PHOTO', {
+      fontSize: '9px',
+      color: '#fff5f0',
+      backgroundColor: '#9a1c1c',
+      hoverColor: '#c42828',
+      padding: { x: 12, y: 9 },
     });
+    takePhotoBtn.setDepth(7);
 
-    const uploadBtn = createMenuButton(this, faceX - 78, panelY + 56, 'UPLOAD', {
-      fontSize: '10px',
-      padding: { x: 16, y: 10 },
+    const rowY = faceMid + 22;
+    const sidePad = Math.min(52, panelW * 0.32);
+    const uploadBtn = createMenuButton(this, faceX - sidePad, rowY, 'UPLOAD', {
+      fontSize: '8px',
+      color: '#ffe8e0',
+      backgroundColor: '#3a1818',
+      hoverColor: '#5a2424',
+      padding: { x: 10, y: 8 },
     });
+    uploadBtn.setDepth(7);
 
-    const clearBtn = createMenuButton(this, faceX + 78, panelY + 56, 'CLEAR', {
-      fontSize: '10px',
-      backgroundColor: '#3a2a2a',
-      hoverColor: '#523838',
-      padding: { x: 16, y: 10 },
+    const clearBtn = createMenuButton(this, faceX + sidePad, rowY, 'CLEAR', {
+      fontSize: '8px',
+      color: '#ffe8e0',
+      backgroundColor: '#2a1212',
+      hoverColor: '#4a1c1c',
+      padding: { x: 10, y: 8 },
     });
+    clearBtn.setDepth(7);
 
     this.statusText = this.add
-      .text(faceX, panelY + 118, this.buildStatusMessage(), {
+      .text(faceX, faceMid + 68, this.buildStatusMessage(), {
         fontFamily: PIXEL_FONT,
-        fontSize: '9px',
-        color: '#8fa3b8',
+        fontSize: '8px',
+        color: '#e0c090',
         align: 'center',
-        wordWrap: { width: 320 },
+        wordWrap: { width: panelW - 20 },
+        stroke: '#1a0808',
+        strokeThickness: 2,
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setDepth(6);
 
     takePhotoBtn.on('pointerdown', () => this.openCamera());
     uploadBtn.on('pointerdown', () => this.openFilePicker());
     clearBtn.on('pointerdown', () => this.clearFace());
 
-    const startButton = createMenuButton(this, cardX, cardY + cardH / 2 - 52, 'START GAME', {
-      fontSize: '14px',
-      color: '#0b0f14',
-      backgroundColor: '#7dba5a',
-      hoverColor: '#93d06d',
-      padding: { x: 36, y: 16 },
+    const startButton = this.add
+      .text(cx, height - 32, 'START', {
+        fontFamily: PIXEL_FONT,
+        fontSize: '18px',
+        color: '#ffffff',
+        stroke: '#1a0808',
+        strokeThickness: 5,
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true });
+
+    this.tweens.add({
+      targets: startButton,
+      alpha: 0.7,
+      duration: 700,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
     });
 
-    startButton.on('pointerdown', () => {
-      this.closeCamera();
-      this.registry.remove('testerMode');
-      this.scene.start('GameScene');
-    });
+    startButton.on('pointerover', () => startButton.setColor('#ffe8e0'));
+    startButton.on('pointerout', () => startButton.setColor('#ffffff'));
+    startButton.on('pointerdown', () => this.leaveToGame());
 
     this.add
-      .text(cardX, height - 28, 'WASD / Arrows move · Mouse aims left/right · Click / Space shoot · Esc pause', {
+      .text(cx, height - 10, 'WASD move · Click shoot · R reload · P shop · Esc pause', {
         fontFamily: PIXEL_FONT,
-        fontSize: '9px',
-        color: '#5d7288',
+        fontSize: '10px',
+        color: '#ffffff',
+        align: 'center',
+        stroke: '#0a0506',
+        strokeThickness: 4,
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setDepth(10);
 
-    this.events.once('shutdown', () => this.closeCamera());
+    this.events.once('shutdown', () => {
+      this.stopMenuVideo();
+      this.stopMenuMusic();
+      this.closeCamera();
+    });
     this.bindFileInput();
     this.refreshBakeStatus();
+  }
+
+  leaveToGame(testerMode = null) {
+    this.stopMenuVideo();
+    this.stopMenuMusic();
+    this.closeCamera();
+    if (testerMode) this.registry.set('testerMode', testerMode);
+    else this.registry.remove('testerMode');
+    this.scene.start('GameScene');
+  }
+
+  startMenuMusic() {
+    if (!this.cache.audio.exists(MENU_MUSIC_KEY)) return;
+    this.sound.unlock();
+    if (this.sound.get(MENU_MUSIC_KEY)) {
+      this.menuMusic = this.sound.get(MENU_MUSIC_KEY);
+    } else {
+      this.menuMusic = this.sound.add(MENU_MUSIC_KEY, { loop: true, volume: 0.45 });
+    }
+    if (!this.menuMusic.isPlaying) {
+      this.menuMusic.play();
+    }
+  }
+
+  stopMenuMusic() {
+    if (this.menuMusic?.isPlaying) this.menuMusic.stop();
+    this.menuMusic = null;
+  }
+
+  /** Full-bleed looping menu video (falls back to still). */
+  placeMenuBackground(width, height) {
+    this.add.rectangle(width / 2, height / 2, width, height, 0x0a0506).setDepth(0);
+
+    // Stretch-to-fill so the bed always matches the game camera (no overflow).
+    const scaleX = width / MENU_ART_W;
+    const scaleY = height / MENU_ART_H;
+    const artMap = {
+      scale: scaleX,
+      scaleX,
+      scaleY,
+      offsetX: 0,
+      offsetY: 0,
+      toScreenX: (x) => x * scaleX,
+      toScreenY: (y) => y * scaleY,
+    };
+
+    if (this.cache.video.exists(MENU_VIDEO_KEY)) {
+      const video = this.add.video(width / 2, height / 2, MENU_VIDEO_KEY);
+      video.setOrigin(0.5);
+      video.setScrollFactor(0);
+      video.setDepth(1);
+      video.setMute(true);
+      video.setLoop(true);
+
+      const fitToScreen = () => {
+        // Prefer native pixels once metadata is ready; always clamp to game size.
+        video.setScale(1);
+        video.setDisplaySize(width, height);
+        video.setPosition(width / 2, height / 2);
+      };
+
+      fitToScreen();
+      video.on('play', fitToScreen);
+      video.on('textureready', fitToScreen);
+      if (video.video) {
+        video.video.addEventListener('loadedmetadata', fitToScreen);
+        video.video.addEventListener('loadeddata', fitToScreen);
+      }
+
+      // Mask to the game rect in case the texture still draws oversized.
+      const maskG = this.make.graphics({ x: 0, y: 0, add: false });
+      maskG.fillStyle(0xffffff, 1);
+      maskG.fillRect(0, 0, width, height);
+      video.setMask(maskG.createGeometryMask());
+
+      video.play(true);
+      this.menuVideo = video;
+      // One more pass after the browser unlocks decoding.
+      this.time.delayedCall(100, fitToScreen);
+      this.time.delayedCall(400, fitToScreen);
+    } else if (this.textures.exists(MENU_BG_KEY)) {
+      this.add
+        .image(width / 2, height / 2, MENU_BG_KEY)
+        .setDisplaySize(width, height)
+        .setDepth(1);
+    }
+
+    return artMap;
+  }
+
+  stopMenuVideo() {
+    if (!this.menuVideo) return;
+    try {
+      this.menuVideo.stop();
+    } catch {
+      // ignore
+    }
+    this.menuVideo.destroy();
+    this.menuVideo = null;
   }
 
   onTitleTesterClick(btnX, btnY) {
@@ -204,11 +344,7 @@ export class MenuScene extends Phaser.Scene {
       padding: { x: 14, y: 8 },
     });
     bossBtn.setDepth(20);
-    bossBtn.on('pointerdown', () => {
-      this.closeCamera();
-      this.registry.set('testerMode', 'boss');
-      this.scene.start('GameScene');
-    });
+    bossBtn.on('pointerdown', () => this.leaveToGame('boss'));
 
     const boss2Btn = createMenuButton(this, btnX, btnY - 32, 'TEST: BOSS 2', {
       fontSize: '10px',
@@ -217,11 +353,7 @@ export class MenuScene extends Phaser.Scene {
       padding: { x: 14, y: 8 },
     });
     boss2Btn.setDepth(20);
-    boss2Btn.on('pointerdown', () => {
-      this.closeCamera();
-      this.registry.set('testerMode', 'boss2');
-      this.scene.start('GameScene');
-    });
+    boss2Btn.on('pointerdown', () => this.leaveToGame('boss2'));
 
     const godBtn = createMenuButton(this, btnX, btnY + 8, 'TEST: GOD', {
       fontSize: '10px',
@@ -230,11 +362,7 @@ export class MenuScene extends Phaser.Scene {
       padding: { x: 14, y: 8 },
     });
     godBtn.setDepth(20);
-    godBtn.on('pointerdown', () => {
-      this.closeCamera();
-      this.registry.set('testerMode', 'god');
-      this.scene.start('GameScene');
-    });
+    godBtn.on('pointerdown', () => this.leaveToGame('god'));
 
     const level2Btn = createMenuButton(this, btnX, btnY + 48, 'TEST: LEVEL 2', {
       fontSize: '10px',
@@ -243,11 +371,7 @@ export class MenuScene extends Phaser.Scene {
       padding: { x: 14, y: 8 },
     });
     level2Btn.setDepth(20);
-    level2Btn.on('pointerdown', () => {
-      this.closeCamera();
-      this.registry.set('testerMode', 'level2');
-      this.scene.start('GameScene');
-    });
+    level2Btn.on('pointerdown', () => this.leaveToGame('level2'));
 
     this.setStatus('Tester modes unlocked');
   }
@@ -261,7 +385,7 @@ export class MenuScene extends Phaser.Scene {
   setStatus(message, isError = false) {
     if (!this.statusText) return;
     this.statusText.setText(message);
-    this.statusText.setColor(isError ? '#e08a8a' : '#8fa3b8');
+    this.statusText.setColor(isError ? '#ff6a6a' : '#c49a9a');
   }
 
   async refreshBakeStatus() {

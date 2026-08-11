@@ -1,5 +1,6 @@
 import { getBestHeadDataUrl } from './headAssets.js';
 import { getSavedFaceDataUrl } from './facePixelate.js';
+import { RETRO_PIXEL_HEAD } from '../shared/retroHead.js';
 
 export const SOLDIER_TEXTURE = 'soldier';
 export const SHEET_SRC_KEY = 'soldier-sheet-src';
@@ -16,6 +17,8 @@ export const SHEET_ROWS = 2;
 const SOCKET_RADIUS = 28;
 // Target height of the opaque head cutout on the soldier.
 const HEAD_CONTENT_HEIGHT = 110;
+/** Chunky pixel grid height before upscaling onto the body (retro mode). */
+const RETRO_HEAD_PIXEL_H = 42;
 
 const HEAD_FALLBACK = {
   right: { x: 159, y: 50 },
@@ -265,27 +268,78 @@ function attachHeadGapless(ctx, headImage, socket) {
   const crop = cropOpaqueBounds(headImage);
   if (!crop) return;
 
-  const scale = HEAD_CONTENT_HEIGHT / crop.h;
-  const drawW = Math.max(1, Math.round(crop.w * scale));
-  const drawH = Math.max(1, Math.round(crop.h * scale));
+  const source = RETRO_PIXEL_HEAD
+    ? retroPixelateHead(headImage, crop, RETRO_HEAD_PIXEL_H)
+    : { image: headImage, sx: crop.x, sy: crop.y, sw: crop.w, sh: crop.h };
+
+  const scale = HEAD_CONTENT_HEIGHT / source.sh;
+  const drawW = Math.max(1, Math.round(source.sw * scale));
+  const drawH = Math.max(1, Math.round(source.sh * scale));
 
   // Bottom of the opaque head overlaps into the neck stump (gapless).
-  const overlap = Math.round(SOCKET_RADIUS * 2.0);
+  // Seat a bit lower so retro heads don't float above the neck.
+  const overlap = Math.round(SOCKET_RADIUS * 2.25);
   const drawX = Math.round(x - drawW / 2);
-  const drawY = Math.round(y + overlap - drawH);
+  const drawY = Math.round(y + overlap - drawH) + 4;
 
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(
-    headImage,
-    crop.x,
-    crop.y,
-    crop.w,
-    crop.h,
+    source.image,
+    source.sx,
+    source.sy,
+    source.sw,
+    source.sh,
     drawX,
     drawY,
     drawW,
     drawH,
   );
+}
+
+/**
+ * Downscale → nearest-neighbor upscale so the head reads as chunky 2D sprite art.
+ * Returns a small canvas used as the drawImage source (full frame, sx/sy=0).
+ */
+function retroPixelateHead(headImage, crop, pixelH) {
+  const aspect = crop.w / Math.max(1, crop.h);
+  const smallH = Math.max(16, pixelH);
+  const smallW = Math.max(12, Math.round(smallH * aspect));
+
+  const small = document.createElement('canvas');
+  small.width = smallW;
+  small.height = smallH;
+  const sctx = small.getContext('2d', { willReadFrequently: true });
+  sctx.imageSmoothingEnabled = false;
+  sctx.clearRect(0, 0, smallW, smallH);
+  sctx.drawImage(
+    headImage,
+    crop.x,
+    crop.y,
+    crop.w,
+    crop.h,
+    0,
+    0,
+    smallW,
+    smallH,
+  );
+
+  // Light palette crunch: snap RGB to coarser steps for flatter cel look.
+  const img = sctx.getImageData(0, 0, smallW, smallH);
+  const { data } = img;
+  const step = 24;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 16) {
+      data[i + 3] = 0;
+      continue;
+    }
+    data[i] = Math.round(data[i] / step) * step;
+    data[i + 1] = Math.round(data[i + 1] / step) * step;
+    data[i + 2] = Math.round(data[i + 2] / step) * step;
+    data[i + 3] = data[i + 3] > 128 ? 255 : 0;
+  }
+  sctx.putImageData(img, 0, 0);
+
+  return { image: small, sx: 0, sy: 0, sw: smallW, sh: smallH };
 }
 
 /** Bounding box of non-transparent pixels in an image. */

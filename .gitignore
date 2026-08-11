@@ -6,3 +6,4 @@ dist
 .env
 public/assets/Mainbody-baked.png
 public/assets/pixel-head.png
+.rollback/
