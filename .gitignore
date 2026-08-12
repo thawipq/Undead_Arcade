@@ -7,3 +7,4 @@ dist
 public/assets/Mainbody-baked.png
 public/assets/pixel-head.png
 .rollback/
+.report-venv/

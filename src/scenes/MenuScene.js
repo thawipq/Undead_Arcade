@@ -1,3 +1,7 @@
+import {
+  cycleBodyId,
+  getSelectedBody,
+} from '../bodyAssets.js';
 import { generatePixelHead, getBakeStatus } from '../bakeFaceClient.js';
 import { startCamera, stopCamera } from '../cameraCapture.js';
 import {
@@ -13,14 +17,14 @@ import {
   savePixelHeadDataUrl,
 } from '../headAssets.js';
 import {
-  SHEET_PATH,
-  SHEET_SRC_KEY,
   buildSoldierAnim,
+  getSheetSrcKey,
   playSoldierWalk,
   preloadSoldierSheet,
 } from '../soldierAnim.js';
 import { createMenuButton } from '../ui/menuButtons.js';
 import { PIXEL_FONT } from '../ui/fonts.js';
+import { hideHighscoresOverlay, showHighscoresOverlay } from '../highscoresOverlay.js';
 
 const MENU_BG_KEY = 'menu-title-bg';
 const MENU_BG_PATH = 'assets/ui/menu-title.png';
@@ -88,12 +92,23 @@ export class MenuScene extends Phaser.Scene {
     const labelY = art.toScreenY(left.y0) + 18;
 
     this.add
-      .text(previewX, labelY, 'SOLDIER', {
+      .text(previewX, labelY, 'BODY', {
         fontFamily: PIXEL_FONT,
         fontSize: '10px',
         color: '#e8b84a',
         stroke: '#1a0808',
         strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(5);
+
+    this.bodyNameText = this.add
+      .text(previewX, labelY + 14, getSelectedBody().label, {
+        fontFamily: PIXEL_FONT,
+        fontSize: '8px',
+        color: '#ffe8e0',
+        stroke: '#1a0808',
+        strokeThickness: 2,
       })
       .setOrigin(0.5)
       .setDepth(5);
@@ -133,6 +148,28 @@ export class MenuScene extends Phaser.Scene {
         repeat: -1,
         ease: 'Sine.easeInOut',
       });
+
+      const bodyRowY = art.toScreenY(left.y1) - 56;
+      const bodyPrevBtn = createMenuButton(this, previewX - 34, bodyRowY, '◀', {
+        fontSize: '8px',
+        color: '#ffe8e0',
+        backgroundColor: '#3a1818',
+        hoverColor: '#5a2424',
+        padding: { x: 8, y: 6 },
+      });
+      bodyPrevBtn.setDepth(7);
+
+      const bodyNextBtn = createMenuButton(this, previewX + 34, bodyRowY, '▶', {
+        fontSize: '8px',
+        color: '#ffe8e0',
+        backgroundColor: '#3a1818',
+        hoverColor: '#5a2424',
+        padding: { x: 8, y: 6 },
+      });
+      bodyNextBtn.setDepth(7);
+
+      bodyPrevBtn.on('pointerdown', () => this.cycleBody(-1));
+      bodyNextBtn.on('pointerdown', () => this.cycleBody(1));
     }
 
     // Stack face controls inside the right gold frame.
@@ -210,6 +247,17 @@ export class MenuScene extends Phaser.Scene {
     startButton.on('pointerout', () => startButton.setColor('#ffffff'));
     startButton.on('pointerdown', () => this.leaveToGame());
 
+    const highScoresBtn = createMenuButton(this, width - 14, 16, 'HIGH SCORES', {
+      fontSize: '8px',
+      color: '#ffe8e0',
+      backgroundColor: '#3a1818',
+      hoverColor: '#5a2424',
+      padding: { x: 10, y: 8 },
+    });
+    highScoresBtn.setOrigin(1, 0);
+    highScoresBtn.setDepth(10);
+    highScoresBtn.on('pointerdown', () => showHighscoresOverlay());
+
     this.add
       .text(cx, height - 10, 'WASD move · Click shoot · R reload · P shop · Esc pause', {
         fontFamily: PIXEL_FONT,
@@ -226,6 +274,7 @@ export class MenuScene extends Phaser.Scene {
       this.stopMenuVideo();
       this.stopMenuMusic();
       this.closeCamera();
+      hideHighscoresOverlay();
     });
     this.bindFileInput();
     this.refreshBakeStatus();
@@ -392,7 +441,7 @@ export class MenuScene extends Phaser.Scene {
     try {
       const status = await getBakeStatus();
       if (!status.configured) {
-        this.setStatus('API key missing — add OPENAI_API_KEY to .env');
+        this.setStatus('API key missing — add GEMINI_API_KEY to .env');
       } else {
         this.setStatus(this.buildStatusMessage());
       }
@@ -427,19 +476,35 @@ export class MenuScene extends Phaser.Scene {
     document.getElementById('face-input')?.click();
   }
 
-  async reloadSoldierSheet() {
-    if (this.textures.exists(SHEET_SRC_KEY)) {
-      this.textures.remove(SHEET_SRC_KEY);
+  async cycleBody(delta) {
+    const body = cycleBodyId(delta);
+    this.bodyNameText?.setText(body.label);
+    try {
+      await this.ensureBodySheetLoaded();
+      await this.refreshPreview(getSavedFaceDataUrl());
+    } catch (error) {
+      console.error(error);
+      this.setStatus(error.message || 'Failed to switch body', true);
     }
+  }
 
+  async ensureBodySheetLoaded() {
+    const key = getSheetSrcKey();
+    if (this.textures.exists(key)) return;
+
+    const body = getSelectedBody();
     await new Promise((resolve, reject) => {
       this.load.once('complete', resolve);
-      this.load.once('loaderror', () => {
-        reject(new Error(`Failed to load ${SHEET_PATH}`));
+      this.load.once('loaderror', (file) => {
+        reject(new Error(`Failed to load ${body.path}`));
       });
-      preloadSoldierSheet(this);
+      this.load.image(key, `${body.path}?v=17`);
       this.load.start();
     });
+  }
+
+  async reloadSoldierSheet() {
+    await this.ensureBodySheetLoaded();
   }
 
   async refreshPreview(faceDataUrl) {

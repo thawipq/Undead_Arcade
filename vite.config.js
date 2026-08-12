@@ -16,7 +16,10 @@ export default defineConfig(({ mode }) => {
       {
         name: 'bake-face-api',
         configureServer(server) {
-          server.middlewares.use(createBakeFaceMiddleware(env.OPENAI_API_KEY));
+          server.middlewares.use(createBakeFaceMiddleware({
+            openaiKey: env.OPENAI_API_KEY,
+            geminiKey: env.GEMINI_API_KEY,
+          }));
         },
       },
     ],

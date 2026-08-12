@@ -2,12 +2,15 @@ import { getSavedFaceDataUrl } from '../facePixelate.js';
 import {
   buildSoldierAnim,
   createSoldierAnims,
+  getLastBakedBodyId,
   playSoldierIdle,
   playSoldierWalk,
   preloadSoldierSheet,
 } from '../soldierAnim.js';
+import { getSelectedBodyId } from '../bodyAssets.js';
 import { createMenuButton } from '../ui/menuButtons.js';
 import { PIXEL_FONT, formatTime } from '../ui/fonts.js';
+import { hideDeathOverlay, showDeathOverlay } from '../deathOverlay.js';
 import {
   BOSS_UNLOCK_MS,
   BOSS_UNLOCK_MS_L2,
@@ -331,9 +334,11 @@ export class GameScene extends Phaser.Scene {
     });
     this.zombies = createZombieGroup(this);
 
-    // Reuse baked soldier if present — avoid rebuild races on scene re-entry.
-    let ready = this.textures.exists('soldier');
-    if (!ready) {
+    const needsSoldierRebuild =
+      !this.textures.exists('soldier') || getLastBakedBodyId() !== getSelectedBodyId();
+
+    let ready = !needsSoldierRebuild;
+    if (needsSoldierRebuild) {
       ready = await buildSoldierAnim(this, getSavedFaceDataUrl());
     } else {
       createSoldierAnims(this);
@@ -341,7 +346,7 @@ export class GameScene extends Phaser.Scene {
 
     if (!ready || !this.textures.exists('soldier')) {
       this.add
-        .text(this.scale.width / 2, this.scale.height / 2, 'Missing Mainbody.png\nEsc for menu', {
+        .text(this.scale.width / 2, this.scale.height / 2, 'Missing soldier body\nEsc for menu', {
           fontFamily: PIXEL_FONT,
           fontSize: '20px',
           color: '#e08a8a',
@@ -779,7 +784,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   getElapsedMs(time = this.time.now) {
-    return Math.max(0, time - this.runStartedAt);
+    return Math.max(0, Math.floor(time - this.runStartedAt));
   }
 
   /** Spawn pacing clock — includes per-level difficulty bias. */
@@ -2325,72 +2330,27 @@ export class GameScene extends Phaser.Scene {
     this.player.anims?.stop();
     this.player.setTint(0x772222);
     this.physics.world.pause();
+    this.pauseBgm();
 
-    const { width, height } = this.scale;
-
-    const dim = this.add
-      .rectangle(width / 2, height / 2, width, height, 0x0b1018, 0.78)
-      .setScrollFactor(0)
-      .setDepth(1000)
-      .setInteractive();
-
-    const panel = this.add
-      .rectangle(width / 2, height / 2, 360, 260, 0x152031, 0.98)
-      .setStrokeStyle(2, 0x5a3030)
-      .setScrollFactor(0)
-      .setDepth(1001);
-
-    const survived = formatTime(this.getElapsedMs());
+    const survivalMs = this.getElapsedMs();
+    const survived = formatTime(survivalMs);
+    const levelsCompleted = Math.max(0, (this.level || 1) - 1);
     this.timerText?.setText(survived);
 
-    const title = this.add
-      .text(width / 2, height / 2 - 78, 'YOU DIED', {
-        fontFamily: PIXEL_FONT,
-        fontSize: '22px',
-        color: '#e08a8a',
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(1002);
-
-    const subtitle = this.add
-      .text(width / 2, height / 2 - 28, `Time ${survived}\nKills ${this.killCount}\nCoins ${this.coinCount}`, {
-        fontFamily: PIXEL_FONT,
-        fontSize: '12px',
-        color: '#8fa3b8',
-        align: 'center',
-        lineSpacing: 10,
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(1002);
-
-    const restartBtn = createMenuButton(this, width / 2, height / 2 + 36, 'RESTART', {
-      fontSize: '14px',
-      color: '#0b0f14',
-      backgroundColor: '#7dba5a',
-      hoverColor: '#93d06d',
-      padding: { x: 22, y: 12 },
-    }).setScrollFactor(0).setDepth(1003);
-
-    const menuBtn = createMenuButton(this, width / 2, height / 2 + 96, 'MAIN MENU', {
-      fontSize: '14px',
-      backgroundColor: '#3a2a2a',
-      hoverColor: '#523838',
-      padding: { x: 22, y: 12 },
-    }).setScrollFactor(0).setDepth(1003);
-
-    const runAction = (action) => {
-      window.setTimeout(() => {
-        if (!this.sys?.isActive()) return;
-        action();
-      }, 0);
-    };
-
-    restartBtn.on('pointerdown', () => runAction(() => this.restartGame()));
-    menuBtn.on('pointerdown', () => runAction(() => this.returnToMenu()));
-
-    this.pauseUi = [dim, panel, title, subtitle, restartBtn, menuBtn];
+    showDeathOverlay(
+      {
+        survivalMs,
+        survivalDisplay: survived,
+        levelsCompleted,
+        levelReached: this.level || 1,
+        kills: this.killCount,
+        coins: this.coinCount,
+      },
+      {
+        onRestart: () => this.restartGame(),
+        onMenu: () => this.returnToMenu(),
+      },
+    );
   }
 
   pauseGame() {
@@ -2556,6 +2516,7 @@ export class GameScene extends Phaser.Scene {
     this.closeShopUi();
     this.closeLevelClearUi();
     this.closeBossWarningUi();
+    hideDeathOverlay();
     this.stopAlarmSfx();
     this.stopExploderTimerSfx();
     this.stopBossBgm();
@@ -2632,6 +2593,7 @@ export class GameScene extends Phaser.Scene {
     this.closeShopUi();
     this.closeLevelClearUi();
     this.closeBossWarningUi();
+    hideDeathOverlay();
     this.stopAlarmSfx();
     this.stopExploderTimerSfx();
     this.stopBgm();

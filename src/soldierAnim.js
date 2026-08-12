@@ -1,10 +1,13 @@
 import { getBestHeadDataUrl } from './headAssets.js';
 import { getSavedFaceDataUrl } from './facePixelate.js';
 import { RETRO_PIXEL_HEAD } from '../shared/retroHead.js';
+import { despillGreen, isGreenScreenPixel } from '../shared/greenScreen.js';
+import { getSelectedBody, getSelectedBodyId, PLAYER_BODIES } from './bodyAssets.js';
 
 export const SOLDIER_TEXTURE = 'soldier';
 export const SHEET_SRC_KEY = 'soldier-sheet-src';
-export const SHEET_PATH = 'assets/Mainbody.png';
+/** Default soldier sheet (first body option). */
+export const SHEET_PATH = PLAYER_BODIES[0].path;
 
 export const SRC_FRAME_W = 688;
 export const SRC_FRAME_H = 768;
@@ -21,9 +24,15 @@ const HEAD_CONTENT_HEIGHT = 110;
 const RETRO_HEAD_PIXEL_H = 42;
 
 const HEAD_FALLBACK = {
-  right: { x: 159, y: 50 },
-  left: { x: 170, y: 52 },
+  right: { x: 168, y: 42 },
+  left: { x: 176, y: 44 },
 };
+
+let lastBakedBodyId = null;
+
+export function getLastBakedBodyId() {
+  return lastBakedBodyId;
+}
 
 function loadImage(dataUrl) {
   return new Promise((resolve) => {
@@ -38,16 +47,24 @@ function loadImage(dataUrl) {
   });
 }
 
+export function getSheetSrcKey(bodyId = getSelectedBodyId()) {
+  return `${SHEET_SRC_KEY}-${bodyId}`;
+}
+
 export function preloadSoldierSheet(scene) {
   // Shared TextureManager — do not remove on every scene entry or the next
   // scene's create() can race / throw and leave a blank screen.
-  if (!scene.textures.exists(SHEET_SRC_KEY)) {
-    scene.load.image(SHEET_SRC_KEY, `${SHEET_PATH}?v=16`);
+  for (const body of PLAYER_BODIES) {
+    const key = getSheetSrcKey(body.id);
+    if (!scene.textures.exists(key)) {
+      scene.load.image(key, `${body.path}?v=17`);
+    }
   }
 }
 
 export function hasSoldierSheet(scene) {
-  return scene.textures.exists(SHEET_SRC_KEY) || scene.textures.exists(SOLDIER_TEXTURE);
+  return PLAYER_BODIES.some((body) => scene.textures.exists(getSheetSrcKey(body.id)))
+    || scene.textures.exists(SOLDIER_TEXTURE);
 }
 
 /**
@@ -55,7 +72,11 @@ export function hasSoldierSheet(scene) {
  * then attaches an AI/pixel head onto each neck socket (gapless).
  */
 export async function buildSoldierAnim(scene, faceDataUrl = getSavedFaceDataUrl()) {
-  if (!scene.textures.exists(SHEET_SRC_KEY)) {
+  const body = getSelectedBody();
+  const bodyId = body.id;
+  const sheetKey = getSheetSrcKey(bodyId);
+
+  if (!scene.textures.exists(sheetKey)) {
     // Re-entering a scene after Esc: sheet may still be loading, but an older
     // baked soldier texture is enough to play.
     if (scene.textures.exists(SOLDIER_TEXTURE)) {
@@ -65,8 +86,9 @@ export async function buildSoldierAnim(scene, faceDataUrl = getSavedFaceDataUrl(
     return false;
   }
 
-  const source = scene.textures.get(SHEET_SRC_KEY).getSourceImage();
-  const headImage = await loadImage(getBestHeadDataUrl(faceDataUrl));
+  const source = scene.textures.get(sheetKey).getSourceImage();
+  const rawHead = await loadImage(getBestHeadDataUrl(faceDataUrl));
+  const headImage = rawHead ? cleanGreenScreenHead(rawHead) : null;
 
   const srcFrameW = Math.floor(source.width / SHEET_COLS) || SRC_FRAME_W;
   const srcFrameH = Math.floor(source.height / SHEET_ROWS) || SRC_FRAME_H;
@@ -99,12 +121,15 @@ export async function buildSoldierAnim(scene, faceDataUrl = getSavedFaceDataUrl(
       );
 
       removeBlackCellBorder(tmpCtx, FRAME_W, FRAME_H);
+      clearCellGridRules(tmpCtx, FRAME_W, FRAME_H);
       removeCheckerboard(tmpCtx, FRAME_W, FRAME_H);
 
+      const facing = row === 0 ? 'right' : 'left';
+      const socket = resolveHeadSocket(body, facing, col, tmpCtx) || HEAD_FALLBACK[facing];
+
+      clearEnclosedHeadPad(tmpCtx, FRAME_W, FRAME_H, socket);
       if (headImage) {
-        const facing = row === 0 ? 'right' : 'left';
-        const socket = findHeadSocket(tmpCtx, FRAME_W, FRAME_H) || HEAD_FALLBACK[facing];
-        attachHeadGapless(tmpCtx, headImage, socket);
+        attachHeadGapless(tmpCtx, headImage, socket, body.headSeatExtra || 0);
       }
 
       ctx.drawImage(tmp, col * FRAME_W, row * FRAME_H);
@@ -113,6 +138,7 @@ export async function buildSoldierAnim(scene, faceDataUrl = getSavedFaceDataUrl(
 
   replaceSoldierTexture(scene, canvas);
   createSoldierAnims(scene);
+  lastBakedBodyId = bodyId;
   return true;
 }
 
@@ -194,6 +220,18 @@ function removeBlackCellBorder(ctx, width, height) {
   ctx.clearRect(width - border, 0, border, height);
 }
 
+function resolveHeadSocket(body, facing, frameCol, ctx) {
+  const sockets = body?.headSockets;
+  if (sockets) {
+    const entry = sockets[facing];
+    if (Array.isArray(entry)) {
+      return entry[frameCol] || entry[0] || null;
+    }
+    if (entry?.x != null) return entry;
+  }
+  return findHeadSocket(ctx, FRAME_W, FRAME_H);
+}
+
 function findHeadSocket(ctx, width, height) {
   const { data } = ctx.getImageData(0, 0, width, height);
   let best = null;
@@ -215,9 +253,10 @@ function findHeadSocket(ctx, width, height) {
 
       const avg = (r + g + b) / 3;
       const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-      if (avg < 12 || avg > 70) continue;
-      if (chroma <= 4 && avg > 40) continue;
-      if (g > r + 8) continue;
+      // Brown male socket only — do NOT treat light greys as sockets
+      // (female checkerboard pad falsely matches and jumps every frame).
+      const isBrownSocket = avg >= 12 && avg <= 70 && !(chroma <= 4 && avg > 40) && !(g > r + 8);
+      if (!isBrownSocket) continue;
 
       let same = 0;
       for (let dy = -12; dy <= 12; dy += 2) {
@@ -249,18 +288,88 @@ function findHeadSocket(ctx, width, height) {
 }
 
 /**
- * Clears ONLY the small placeholder socket, crops the AI head to opaque pixels,
+ * Female sheets often leave a sealed checkerboard oval where the head should be.
+ * Border flood can't reach it, so seed a grey-pad flood from the socket center.
+ */
+function clearEnclosedHeadPad(ctx, width, height, socket) {
+  const image = ctx.getImageData(0, 0, width, height);
+  const { data } = image;
+  const total = width * height;
+  const marked = new Uint8Array(total);
+
+  const isPad = (i) => {
+    const o = i * 4;
+    const r = data[o];
+    const g = data[o + 1];
+    const b = data[o + 2];
+    const a = data[o + 3];
+    if (a < 20) return true;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const avg = (r + g + b) / 3;
+    const chroma = max - min;
+    if (chroma > 24) return false;
+    if (r > g + 18 && r > b + 12) return false;
+    if (g > r + 14 && g > b + 8) return false;
+    return avg >= 70 && avg <= 230;
+  };
+
+  const queue = [];
+  const push = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const i = y * width + x;
+    if (marked[i] || !isPad(i)) return;
+    marked[i] = 1;
+    queue.push(i);
+  };
+
+  const sx = Math.round(socket.x);
+  const sy = Math.round(socket.y);
+  const seedR = SOCKET_RADIUS + 14;
+  for (let dy = -seedR; dy <= seedR; dy += 1) {
+    for (let dx = -seedR; dx <= seedR; dx += 1) {
+      if (dx * dx + dy * dy > seedR * seedR) continue;
+      push(sx + dx, sy + dy);
+    }
+  }
+
+  push(Math.floor(width * 0.48), Math.floor(height * 0.16));
+  push(Math.floor(width * 0.52), Math.floor(height * 0.18));
+
+  while (queue.length) {
+    const i = queue.pop();
+    const x = i % width;
+    const y = (i / width) | 0;
+    if (y > height * 0.42) continue;
+    push(x + 1, y);
+    push(x - 1, y);
+    push(x, y + 1);
+    push(x, y - 1);
+  }
+
+  for (let i = 0; i < total; i += 1) {
+    if (!marked[i]) continue;
+    const y = (i / width) | 0;
+    if (y > height * 0.42) continue;
+    data[i * 4 + 3] = 0;
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
+
+/**
+ * Clears the placeholder socket, crops the AI head to opaque pixels,
  * then seats that content on the neck (ignores transparent padding).
  */
-function attachHeadGapless(ctx, headImage, socket) {
+function attachHeadGapless(ctx, headImage, socket, seatExtra = 0) {
   const x = socket.x;
   const y = socket.y;
 
-  // 1) Remove only the small brown head placeholder — keep the torso.
+  // 1) Remove placeholder / leftover pad in the socket (brown, white, or checker).
   ctx.save();
   ctx.globalCompositeOperation = 'destination-out';
   ctx.beginPath();
-  ctx.arc(x, y, SOCKET_RADIUS + 3, 0, Math.PI * 2);
+  ctx.arc(x, y, SOCKET_RADIUS + 12, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
@@ -277,8 +386,8 @@ function attachHeadGapless(ctx, headImage, socket) {
   const drawH = Math.max(1, Math.round(source.sh * scale));
 
   // Bottom of the opaque head overlaps into the neck stump (gapless).
-  // Seat a bit lower so retro heads don't float above the neck.
-  const overlap = Math.round(SOCKET_RADIUS * 2.25);
+  // seatExtra pushes further into the collar (used for female sheet).
+  const overlap = Math.round(SOCKET_RADIUS * 2.25) + seatExtra;
   const drawX = Math.round(x - drawW / 2);
   const drawY = Math.round(y + overlap - drawH) + 4;
 
@@ -332,6 +441,10 @@ function retroPixelateHead(headImage, crop, pixelH) {
       data[i + 3] = 0;
       continue;
     }
+    if (isGreenScreenPixel(data[i], data[i + 1], data[i + 2], data[i + 3])) {
+      data[i + 3] = 0;
+      continue;
+    }
     data[i] = Math.round(data[i] / step) * step;
     data[i + 1] = Math.round(data[i + 1] / step) * step;
     data[i + 2] = Math.round(data[i + 2] / step) * step;
@@ -362,8 +475,10 @@ function cropOpaqueBounds(image) {
 
   for (let py = 0; py < h; py += 1) {
     for (let px = 0; px < w; px += 1) {
-      const a = data[(py * w + px) * 4 + 3];
+      const o = (py * w + px) * 4;
+      const a = data[o + 3];
       if (a < 16) continue;
+      if (isGreenScreenPixel(data[o], data[o + 1], data[o + 2], a)) continue;
       if (px < minX) minX = px;
       if (py < minY) minY = py;
       if (px > maxX) maxX = px;
@@ -388,12 +503,120 @@ function cropOpaqueBounds(image) {
   };
 }
 
+function cleanGreenScreenHead(image) {
+  const w = image.naturalWidth || image.width;
+  const h = image.naturalHeight || image.height;
+  if (!w || !h) return image;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  removeGreenScreen(ctx, w, h);
+  return canvas;
+}
+
+function removeGreenScreen(ctx, width, height) {
+  const image = ctx.getImageData(0, 0, width, height);
+  const { data } = image;
+  const total = width * height;
+  const marked = new Uint8Array(total);
+
+  const pushIfGreen = (x, y, queue) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const i = y * width + x;
+    if (marked[i]) return;
+    const o = i * 4;
+    if (!isGreenScreenPixel(data[o], data[o + 1], data[o + 2], data[o + 3])) return;
+    marked[i] = 1;
+    queue.push(i);
+  };
+
+  const queue = [];
+  for (let x = 0; x < width; x += 1) {
+    pushIfGreen(x, 0, queue);
+    pushIfGreen(x, height - 1, queue);
+  }
+  for (let y = 0; y < height; y += 1) {
+    pushIfGreen(0, y, queue);
+    pushIfGreen(width - 1, y, queue);
+  }
+
+  while (queue.length) {
+    const i = queue.pop();
+    const x = i % width;
+    const y = (i / width) | 0;
+    pushIfGreen(x + 1, y, queue);
+    pushIfGreen(x - 1, y, queue);
+    pushIfGreen(x, y + 1, queue);
+    pushIfGreen(x, y - 1, queue);
+  }
+
+  for (let i = 0; i < total; i += 1) {
+    const o = i * 4;
+    if (marked[i]) {
+      data[o + 3] = 0;
+      continue;
+    }
+
+    const spilled = despillGreen(data[o], data[o + 1], data[o + 2]);
+    data[o] = spilled.r;
+    data[o + 1] = spilled.g;
+    data[o + 2] = spilled.b;
+
+    if (isGreenScreenPixel(data[o], data[o + 1], data[o + 2], data[o + 3])) {
+      data[o + 3] = 0;
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
+
+/** Wipe solid black grid bars Sorceress bakes along cell edges. */
+function clearCellGridRules(ctx, width, height) {
+  const image = ctx.getImageData(0, 0, width, height);
+  const { data } = image;
+
+  const rowIsBlackRule = (y) => {
+    let dark = 0;
+    for (let x = 0; x < width; x += 1) {
+      const o = (y * width + x) * 4;
+      if (data[o + 3] < 20) {
+        dark += 1;
+        continue;
+      }
+      const avg = (data[o] + data[o + 1] + data[o + 2]) / 3;
+      if (avg < 28) dark += 1;
+    }
+    return dark >= width * 0.7;
+  };
+
+  const clearRow = (y) => {
+    for (let x = 0; x < width; x += 1) {
+      data[(y * width + x) * 4 + 3] = 0;
+    }
+  };
+
+  for (let y = height - 1; y >= Math.max(0, height - 16); y -= 1) {
+    if (!rowIsBlackRule(y)) break;
+    clearRow(y);
+  }
+  for (let y = 0; y < Math.min(12, height); y += 1) {
+    if (!rowIsBlackRule(y)) break;
+    clearRow(y);
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
+
 function removeCheckerboard(ctx, width, height) {
   const image = ctx.getImageData(0, 0, width, height);
   const { data } = image;
   const total = width * height;
   const marked = new Uint8Array(total);
 
+  // Female sheet uses a flat dual-grey pad (~128–200) instead of real alpha.
   const isCheckerSquare = (i) => {
     const o = i * 4;
     const r = data[o];
@@ -407,10 +630,12 @@ function removeCheckerboard(ctx, width, height) {
     const avg = (r + g + b) / 3;
     const chroma = max - min;
 
-    if (chroma > 16) return false;
-    if (avg < 80) return false;
-    if (avg > 175) return true;
-    return avg >= 85 && avg <= 165;
+    // Keep olive uniforms / skin / brown boots.
+    if (chroma > 22) return false;
+    if (r > g + 18 && r > b + 12) return false;
+    if (g > r + 14 && g > b + 8) return false;
+    if (avg < 70) return false;
+    return avg <= 215;
   };
 
   const queue = [];
@@ -439,6 +664,30 @@ function removeCheckerboard(ctx, width, height) {
     push(x - 1, y);
     push(x, y + 1);
     push(x, y - 1);
+  }
+
+  // Grow into leftover pad islands touching cleared pixels.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (let i = 0; i < total; i += 1) {
+      if (marked[i] || !isCheckerSquare(i)) continue;
+      const x = i % width;
+      const y = (i / width) | 0;
+      let touches = false;
+      for (let dy = -1; dy <= 1 && !touches; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (marked[ny * width + nx]) touches = true;
+        }
+      }
+      if (!touches) continue;
+      marked[i] = 1;
+      grew = true;
+    }
   }
 
   for (let i = 0; i < total; i += 1) {
