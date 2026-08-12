@@ -60,15 +60,16 @@ import {
 const PLAYER_SPEED = 155;
 const BULLET_SPEED = 520;
 const FIRE_RATE_MS = 420;
-const PLAYER_MAX_HP = 3;
+const PLAYER_MAX_HP = 4;
 const PLAYER_IFRAME_MS = 5000;
 const PLAYER_KNOCKBACK = 220;
 const MAG_SIZE = 8;
 const RELOAD_MS = 1100;
 /** Arena-clear exclusive: modest permanent reload boost for the boss fight. */
 
-/** Rare kill drops (non-boss). ~1 in 20 → usually 1–2 per arena clear. */
-const ABILITY_DROP_CHANCE = 0.05;
+/** Non-boss kill drops. Pity guarantees one if you've gone dry. */
+const ABILITY_DROP_CHANCE = 0.14;
+const ABILITY_DROP_PITY_KILLS = 8;
 /** Tester modes (god/boss): frequent drops so abilities are easy to verify. */
 const ABILITY_DROP_CHANCE_TESTER = 0.5;
 /** Soft vacuum when the player steps near a coin (world pixels). */
@@ -90,7 +91,7 @@ const SHOP_CATALOG = [
     consumable: true,
     maxLevel: 1,
     costs: [10],
-    blurb: () => '+1 heart (max 3)',
+    blurb: () => '+1 heart (max 4)',
   },
   {
     id: 'fireRate',
@@ -303,6 +304,7 @@ export class GameScene extends Phaser.Scene {
     this.overdriveUntil = 0;
     this.shieldCharges = 0;
     this.abilityDropBag = [];
+    this.killsSinceAbilityDrop = 0;
     this.heartTexts = [];
     this.bgm = null;
     this.bossBgm = null;
@@ -415,6 +417,7 @@ export class GameScene extends Phaser.Scene {
     this.overdriveUntil = 0;
     this.shieldCharges = 0;
     this.abilityDropBag = [];
+    this.killsSinceAbilityDrop = 0;
     this.clearRewardGiven = false;
     this.choosingReward = false;
     this.shopOpen = false;
@@ -1396,6 +1399,8 @@ export class GameScene extends Phaser.Scene {
     if (bullet.body) bullet.body.enable = false;
 
     const wasBoss = zombie.zombieType === ZOMBIE_TYPE_BOSS;
+    const wasFinalBoss =
+      wasBoss && (zombie.bossKind === BOSS_KIND_BROODMOTHER || (this.level || 1) >= 2);
     const wasBomber = zombie.zombieType === ZOMBIE_TYPE_BOMBER;
     const dropX = zombie.x;
     const dropY = zombie.y;
@@ -1407,15 +1412,14 @@ export class GameScene extends Phaser.Scene {
         this.detonateBomber(zombie, false, dropX, dropY);
       } else if (wasBoss) {
         this.spawnCoinSplash(dropX, dropY, 20);
-        this.spawnExitDoor(dropX, dropY);
+        if (wasFinalBoss) {
+          this.openRunComplete();
+        } else {
+          this.spawnExitDoor(dropX, dropY);
+        }
       } else {
         this.spawnCoin(dropX, dropY);
-        if (
-          Math.random() <
-          (this.hasTesterGodMode() ? ABILITY_DROP_CHANCE_TESTER : ABILITY_DROP_CHANCE)
-        ) {
-          this.spawnAbilityPickup(dropX, dropY);
-        }
+        this.tryDropAbility(dropX, dropY);
       }
     }
   }
@@ -1449,12 +1453,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.spawnCoin(bx, by);
-    if (
-      Math.random() <
-      (this.hasTesterGodMode() ? ABILITY_DROP_CHANCE_TESTER : ABILITY_DROP_CHANCE)
-    ) {
-      this.spawnAbilityPickup(bx, by);
-    }
+    this.tryDropAbility(bx, by);
   }
 
   /** Explode when the player is close enough that the blast would hit. */
@@ -1687,6 +1686,10 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (!this.physics.overlap(this.player, this.exitDoor)) return;
+    if ((this.level || 1) >= 2) {
+      this.openRunComplete();
+      return;
+    }
     this.openLevelClear();
   }
 
@@ -1836,6 +1839,7 @@ export class GameScene extends Phaser.Scene {
     this.reloadUntil = 0;
     this.clearRewardGiven = false;
     this.abilityDropBag = [];
+    this.killsSinceAbilityDrop = 0;
     this.refreshHeartHud();
     this.refreshAmmoHud();
     this.refreshAbilityHud();
@@ -1902,6 +1906,21 @@ export class GameScene extends Phaser.Scene {
       coin.body?.stop();
       if (coin.body) coin.body.enable = false;
     });
+  }
+
+  /** Roll (or pity) an ability drop on a non-boss kill. */
+  tryDropAbility(x, y) {
+    this.killsSinceAbilityDrop = (this.killsSinceAbilityDrop || 0) + 1;
+    const chance = this.hasTesterGodMode()
+      ? ABILITY_DROP_CHANCE_TESTER
+      : ABILITY_DROP_CHANCE;
+    const pity =
+      !this.hasTesterGodMode() && this.killsSinceAbilityDrop >= ABILITY_DROP_PITY_KILLS;
+    if (Math.random() >= chance && !pity) return null;
+
+    const pickup = this.spawnAbilityPickup(x, y);
+    if (pickup) this.killsSinceAbilityDrop = 0;
+    return pickup;
   }
 
   spawnAbilityPickup(x, y) {
@@ -2040,8 +2059,9 @@ export class GameScene extends Phaser.Scene {
       this.shieldRing.setVisible(true);
       return;
     }
+    // Covers torso + head without engulfing the whole sprite.
     this.shieldRing = this.add
-      .circle(this.player.x, this.player.y, 42, 0x5ec8ff, 0.12)
+      .circle(this.player.x, this.player.y - 12, 56, 0x5ec8ff, 0.12)
       .setStrokeStyle(2, 0x9fe0ff, 0.85)
       .setDepth(11);
   }
@@ -2054,7 +2074,7 @@ export class GameScene extends Phaser.Scene {
   updateAbilityFx(time) {
     if (this.shieldCharges > 0 && this.player?.active) {
       this.ensureShieldRing();
-      this.shieldRing.setPosition(this.player.x, this.player.y);
+      this.shieldRing.setPosition(this.player.x, this.player.y - 12);
       this.shieldRing.setAlpha(0.55 + Math.sin(time / 140) * 0.2);
     } else if (this.shieldRing) {
       this.clearShieldRing();
@@ -2353,6 +2373,42 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  openRunComplete() {
+    if (this.dead || this.levelClearOpen) return;
+
+    this.dead = true;
+    this.clearExitDoor();
+    this.stopExploderTimerSfx();
+    this.player?.setVelocity(0, 0);
+    this.player?.setAlpha(1);
+    this.player?.anims?.stop();
+    this.player?.clearTint();
+    this.physics.world.pause();
+    this.pauseBgm();
+    this.stopBgm(true);
+
+    const survivalMs = this.getElapsedMs();
+    const survived = formatTime(survivalMs);
+    const levelsCompleted = this.level || 1;
+    this.timerText?.setText(survived);
+
+    showDeathOverlay(
+      {
+        survivalMs,
+        survivalDisplay: survived,
+        levelsCompleted,
+        levelReached: this.level || 1,
+        kills: this.killCount,
+        coins: this.coinCount,
+      },
+      {
+        title: 'YOU WIN',
+        onRestart: () => this.restartGame(),
+        onMenu: () => this.returnToMenu(),
+      },
+    );
+  }
+
   pauseGame() {
     if (
       this.paused ||
@@ -2556,6 +2612,7 @@ export class GameScene extends Phaser.Scene {
     this.reloadUntil = 0;
     this.clearRewardGiven = false;
     this.abilityDropBag = [];
+    this.killsSinceAbilityDrop = 0;
     this.refreshHeartHud();
     this.refreshAmmoHud();
     this.refreshAbilityHud();

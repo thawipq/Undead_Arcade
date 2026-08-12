@@ -108,7 +108,7 @@ function bindOverlayOnce() {
   });
 }
 
-export function showDeathOverlay(stats, { onRestart, onMenu } = {}) {
+export function showDeathOverlay(stats, { onRestart, onMenu, title = 'YOU DIED' } = {}) {
   bindOverlayOnce();
 
   const overlay = getOverlay();
@@ -116,6 +116,12 @@ export function showDeathOverlay(stats, { onRestart, onMenu } = {}) {
 
   activeCallbacks = { stats, onRestart, onMenu };
   saveInFlight = false;
+
+  const titleEl = document.getElementById('death-title');
+  if (titleEl) {
+    titleEl.textContent = title;
+    titleEl.style.color = title === 'YOU DIED' ? '#e08a8a' : '#e8b84a';
+  }
 
   const nameInput = document.getElementById('death-name-input');
   if (nameInput) nameInput.value = getSavedPlayerName();
@@ -135,6 +141,11 @@ export function showDeathOverlay(stats, { onRestart, onMenu } = {}) {
 export function hideDeathOverlay() {
   const overlay = getOverlay();
   if (overlay) overlay.hidden = true;
+  const titleEl = document.getElementById('death-title');
+  if (titleEl) {
+    titleEl.textContent = 'YOU DIED';
+    titleEl.style.color = '#e08a8a';
+  }
   activeCallbacks = null;
   saveInFlight = false;
 }
