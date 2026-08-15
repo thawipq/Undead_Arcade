@@ -53,4 +53,4 @@ Then restart the dev server.
 
 ## License / copyright
 
-Copyright © 2026 Thawip Qian. Created for a class project at Sasin. Not licensed for commercial reuse unless you have permission from the author.
+Copyright © 2026 Thawip Qian. Created for a class project at Sasin School of Management.
