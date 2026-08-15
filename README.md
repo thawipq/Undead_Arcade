@@ -2,7 +2,7 @@
 
 A 2D top-down zombie survival shooter built with Phaser 3 and Vite.
 
-This project was created as a **class project at Sasin**.
+This project was created as a **class project at Sasin School of Management**.
 
 **Copyright © 2026 Thawip Qian.** All rights reserved.
 
